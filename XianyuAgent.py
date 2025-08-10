@@ -2,20 +2,39 @@ import re
 from typing import List, Dict
 import os
 from openai import OpenAI
+from google import genai
 from loguru import logger
 
 
 class XianyuReplyBot:
     def __init__(self):
-        # 初始化OpenAI客户端
-        self.client = OpenAI(
-            api_key=os.getenv("API_KEY"),
-            base_url=os.getenv("MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        )
+        # 初始化LLM客户端
+        self.model_provider = os.getenv("MODEL_PROVIDER", "qwen").lower()
+        self.client = self._init_llm_client()
         self._init_system_prompts()
         self._init_agents()
         self.router = IntentRouter(self.agents['classify'])
         self.last_intent = None  # 记录最后一次意图
+    
+    def _init_llm_client(self):
+        """根据配置初始化不同的LLM客户端"""
+        if self.model_provider == "gemini":
+            # Gemini配置
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not set in environment variables")
+            
+            return genai.Client(api_key=api_key)
+        else:
+            # 默认使用Qwen配置
+            api_key = os.getenv("API_KEY")
+            if not api_key:
+                raise ValueError("API_KEY is not set in environment variables")
+            
+            return OpenAI(
+                api_key=api_key,
+                base_url=os.getenv("MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            )
 
 
     def _init_agents(self):
@@ -212,14 +231,28 @@ class BaseAgent:
 
     def _call_llm(self, messages: List[Dict], temperature: float = 0.4) -> str:
         """调用大模型"""
-        response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
-            messages=messages,
-            temperature=temperature,
-            max_tokens=500,
-            top_p=0.8
-        )
-        return response.choices[0].message.content
+        # 根据provider选择合适的模型名称和调用方式
+        model_provider = os.getenv("MODEL_PROVIDER", "qwen").lower()
+        if model_provider == "gemini":
+            model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+            # 使用官方Google Generative AI客户端
+            # 构建内容字符串
+            content = messages[0]['content'] + "\n\n用户：" + messages[1]['content']
+            response = self.client.models.generate_content(
+                model=model_name,
+                contents=content,
+            )
+            return response.text
+        else:
+            model_name = os.getenv("MODEL_NAME", "qwen-max")
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=500,
+                top_p=0.8
+            )
+            return response.choices[0].message.content
 
 
 class PriceAgent(BaseAgent):
@@ -231,14 +264,27 @@ class PriceAgent(BaseAgent):
         messages = self._build_messages(user_msg, item_desc, context)
         messages[0]['content'] += f"\n▲当前议价轮次：{bargain_count}"
 
-        response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
-            messages=messages,
-            temperature=dynamic_temp,
-            max_tokens=500,
-            top_p=0.8
-        )
-        return self.safety_filter(response.choices[0].message.content)
+        # 根据provider选择合适的模型名称和调用方式
+        model_provider = os.getenv("MODEL_PROVIDER", "qwen").lower()
+        if model_provider == "gemini":
+            model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+            # 使用官方Google Generative AI客户端
+            content = messages[0]['content'] + "\n\n用户：" + messages[1]['content']
+            response = self.client.models.generate_content(
+                model=model_name,
+                contents=content,
+            )
+            return self.safety_filter(response.text)
+        else:
+            model_name = os.getenv("MODEL_NAME", "qwen-max")
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=dynamic_temp,
+                max_tokens=500,
+                top_p=0.8
+            )
+            return self.safety_filter(response.choices[0].message.content)
 
     def _calc_temperature(self, bargain_count: int) -> float:
         """动态温度策略"""
@@ -252,18 +298,30 @@ class TechAgent(BaseAgent):
         messages = self._build_messages(user_msg, item_desc, context)
         # messages[0]['content'] += "\n▲知识库：\n" + self._fetch_tech_specs()
 
-        response = self.client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "qwen-max"),
-            messages=messages,
-            temperature=0.4,
-            max_tokens=500,
-            top_p=0.8,
-            extra_body={
-                "enable_search": True,
-            }
-        )
-
-        return self.safety_filter(response.choices[0].message.content)
+        # 根据provider选择合适的模型名称和调用方式
+        model_provider = os.getenv("MODEL_PROVIDER", "qwen").lower()
+        if model_provider == "gemini":
+            model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+            # 使用官方Google Generative AI客户端
+            content = messages[0]['content'] + "\n\n用户：" + messages[1]['content']
+            response = self.client.models.generate_content(
+                model=model_name,
+                contents=content,
+            )
+            return self.safety_filter(response.text)
+        else:
+            model_name = os.getenv("MODEL_NAME", "qwen-max")
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.4,
+                max_tokens=500,
+                top_p=0.8,
+                extra_body={
+                    "enable_search": True,
+                }
+            )
+            return self.safety_filter(response.choices[0].message.content)
 
 
     # def _fetch_tech_specs(self) -> str:
